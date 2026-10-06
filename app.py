@@ -84,7 +84,7 @@ if st.button("면접 예상 질문 생성하기"):
                 
                 # AI 설정 및 호출
                 genai.configure(api_key=api_key)
-                model = genai.GenerativeModel('gemini-3.7-flash') 
+                model = genai.GenerativeModel('gemini-1.5-flash') 
                 
                 # 프롬프트 생성 (15세트 생성 및 전 영역 반영 지시사항 추가)
                # 4. 프롬프트 생성 (마크다운 가독성 및 15세트 생성 지시사항 추가)
