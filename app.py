@@ -94,9 +94,11 @@ def pdf_download_component(result_text: str, title_prefix: str):
                 opacity: 0.88;
             }}
             .status-msg {{
+                margin-top: 8px;
                 font-size: 13px;
-                color: #555;
-                margin-left: 5px;
+                font-weight: 500;
+                color: #374151;
+                min-height: 20px;
             }}
             /* PDF 내부 디자인 (인용구 박스 및 수식 스타일) */
             #pdf-render-area {{
@@ -146,8 +148,8 @@ def pdf_download_component(result_text: str, title_prefix: str):
         <div class="btn-container">
             <button class="pdf-btn" id="dl-btn" onclick="downloadDirectPDF()">📥 면접 질문 PDF 바로 다운로드</button>
             <button class="pdf-btn print-mode" onclick="openPrintPDF()">🖨️ 고화질 PDF 저장 / 인쇄 (긴 문서·수식 권장)</button>
-            <span class="status-msg" id="status-text"></span>
         </div>
+        <div class="status-msg" id="status-text"></div>
 
         <div id="pdf-render-area"></div>
 
@@ -229,7 +231,8 @@ def pdf_download_component(result_text: str, title_prefix: str):
     </body>
     </html>
     """
-    components.html(html_code, height=65)
+    # 안내 문구가 잘리지 않도록 높이를 100으로 설정
+    components.html(html_code, height=100)
 
 
 # ==========================================
@@ -237,6 +240,7 @@ def pdf_download_component(result_text: str, title_prefix: str):
 # ==========================================
 st.title("🎓 생기부 기반 면접 예상 질문 생성기")
 st.markdown("학생의 **학교생활기록부 PDF**와 **희망 대학/학과**를 입력하면 과거 사례 기반 맞춤형 면접 질문을 생성합니다. (전송 전 개인정보는 자동 비식별화 처리됩니다.)")
+st.caption("하다가 어려운점이 있다면 제작자에게 문의주세요(지족고 송정훈)")
 
 api_key = st.text_input("Gemini API 키를 입력하세요 (무료 키 사용 가능)", type="password")
 
