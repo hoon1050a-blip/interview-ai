@@ -16,6 +16,8 @@ if "safe_student_text" not in st.session_state:
     st.session_state.safe_student_text = ""
 if "target_title" not in st.session_state:
     st.session_state.target_title = ""
+if "token_info" not in st.session_state:
+    st.session_state.token_info = None
 
 # 1. 깃허브에 올린 CSV 데이터 자동 불러오기
 @st.cache_data
@@ -231,7 +233,6 @@ def pdf_download_component(result_text: str, title_prefix: str):
     </body>
     </html>
     """
-    # 안내 문구가 잘리지 않도록 높이를 100으로 설정
     components.html(html_code, height=100)
 
 
@@ -250,7 +251,16 @@ with col1:
 with col2:
     major = st.text_input("모집 단위(학과)", placeholder="예: 수학교육과")
 
-student_name = st.text_input("학생 이름 (생기부 내 이름 가림 처리용)", placeholder="예: 홍길동")
+col3, col4 = st.columns(2)
+with col3:
+    student_name = st.text_input("학생 이름 (생기부 내 이름 가림 처리용)", placeholder="예: 홍길동")
+with col4:
+    question_count = st.selectbox(
+        "생성할 질문 세트 수",
+        options=[15, 20, 25, 30],
+        index=1,  # 기본값 20세트
+        help="질문 수를 20~25개로 늘려도 전체 토큰 소모량은 약 5% 내외만 증가합니다."
+    )
 
 uploaded_file = st.file_uploader("학생 생기부 PDF 파일 업로드", type="pdf")
 pdf_password = st.text_input("PDF 비밀번호 (나이스 생기부는 보통 생년월일 6자리, 없으면 비워둠)", type="password")
@@ -264,7 +274,7 @@ if st.button("면접 예상 질문 생성하기"):
     elif not university or not major:
         st.warning("희망 대학과 학과를 입력해주세요.")
     else:
-        with st.spinner("생기부 비식별화 및 AI 분석을 진행 중입니다... 잠시만 기다려주세요."):
+        with st.spinner(f"생기부 비식별화 및 맞춤형 질문 {question_count}세트 생성 중입니다... 잠시만 기다려주세요."):
             try:
                 # 과거 기출 데이터 검색
                 past_data_text = ""
@@ -273,7 +283,7 @@ if st.button("면접 예상 질문 생성하기"):
                     if not filtered_df.empty:
                         past_data_text = " ".join(filtered_df['기출문제'].astype(str).tolist())
                     else:
-                        past_data_text = f"해당 대학/학과의 과거 기출 데이터가 없습니다. 일반적인 {university} {major} 면접 수준에 맞춰 생성해주세요."
+                        past_data_text = f"해당 대학/학과의 과거 기출 데이터가 없습니다. 일반적인 {university} {major} 서류 기반 면접 수준에 맞춰 생성해주세요."
                 else:
                     past_data_text = "데이터베이스(CSV)를 찾을 수 없습니다."
 
@@ -290,26 +300,37 @@ if st.button("면접 예상 질문 생성하기"):
                 
                 # AI 설정 및 호출
                 genai.configure(api_key=api_key)
-                model = genai.GenerativeModel('gemini-3.8-flash') 
+                model = genai.GenerativeModel(
+                    model_name='gemini-3.8-flash',
+                    generation_config={"max_output_tokens": 16384}
+                )
                 
-                # 프롬프트 생성 (수식 LaTeX 표기 지침 추가)
+                # 프롬프트 생성 (메인 질문은 생기부 사실/과정 확인 중심, 꼬리질문에서 단계적 검증 지침 강화)
                 prompt = f"""
-                당신은 {university} {major}의 입학사정관입니다.
-                아래 [과거 기출문제 및 동향]과 비식별화된 [학생 생활기록부]를 분석하여 전공 적합성을 보여주는 면접 질문 세트 15개를 생성하세요. (메인 질문 15개와 각각의 꼬리 질문을 포함하여 총 30개 이상의 질문을 만드세요.)
-                
-                주의사항: 절대 인사말이나 서론, 결론을 작성하지 마세요. 
-                중요 1: 가독성을 위해 반드시 아래의 [출력 양식]에 기재된 마크다운 인용구(>)와 굵은 글씨(**), 줄바꿈을 정확히 지켜서 15개의 세트를 출력하세요.
-                중요 2: 수학·과학 수식이나 기호(함수, 미적분, 극한, 벡터, 행렬, 화학식 등)가 등장할 때는 깨지지 않도록 반드시 표준 LaTeX 수식 문법인 $수식$ 형태로 감싸서 작성하세요.
+                당신은 {university} {major}의 학생부종합전형(서류 기반) 면접관입니다.
+                아래 [과거 기출문제 및 동향]과 비식별화된 [학생 생활기록부]를 분석하여 면접 질문 세트 {question_count}개를 생성하세요.
+
+                [질문 출제 원칙 및 난이도 조절 지침 - 매우 중요]
+                1. **메인 질문(Q.)은 반드시 '생기부에 적힌 내용 그 자체'에서만 출제하세요.**
+                   - 처음부터 생기부에 없는 외부 개념이나 지나치게 깊은 대학 전공 지식을 물어보는 것을 엄격히 금지합니다.
+                   - 메인 질문에서는 생기부에 기록된 활동을 시작하게 된 계기(호기심), 구체적인 탐구 과정 및 방법, 본인이 맡은 역할, 활동 중 겪은 어려움과 해결 과정, 활동을 통해 배우고 느낀 점을 묻는 '서류 사실 확인형 질문'으로 구성하세요.
+                2. **심화 탐구 검증은 '꼬리질문(⚡)'에서 단계적으로 진행하세요.**
+                   - 학생이 수행한 심화 탐구의 진위 여부나 원리 이해도 검증은 꼬리질문에서 물어보세요.
+                   - 단, 꼬리질문 역시 생기부에 학생이 직접 언급한 개념·원리·수식·실험 결과를 고등학교 교육과정 수준에서 제대로 이해하고 썼는지 확인하는 선에서 출제하고, 생기부에 전혀 없는 생소한 대학 전공 이론을 끌어와 묻지 마세요.
+                3. **형식 및 수식 규칙:**
+                   - 절대 인사말이나 서론, 결론을 작성하지 마세요.
+                   - 가독성을 위해 반드시 아래 [출력 양식]의 마크다운 인용구(>)와 굵은 글씨(**), 줄바꿈을 정확히 지켜서 {question_count}개의 세트를 끝까지 출력하세요.
+                   - 수학·과학 수식이나 기호(함수, 미적분, 극한, 벡터, 행렬, 화학식 등)가 등장할 때는 반드시 표준 LaTeX 수식 문법인 $수식$ 형태로 감싸서 작성하세요.
 
                 [출력 양식]
                 ### 🎯 질문 세트 [번호]
-                > 📌 **[출제 근거]**: 활동 영역(자율/동아리/진로/교과목명) - 활동 요약
+                > 📌 **[출제 근거]**: 활동 영역(자율/동아리/진로/교과목명) - 생기부에 기재된 핵심 활동 요약
                 >
-                > **Q. (여기에 생기부 기반 메인 질문 작성)**
+                > **Q. (생기부에 적힌 활동 내용·동기·과정·역할을 바탕으로 한 기본 확인 질문)**
                 >
-                > ⚡ **꼬리질문 공격 포인트**: (여기에 꼬리질문의 의도와 후속 질문 1~2개 작성)
+                > ⚡ **꼬리질문 및 심화 검증 포인트**: (학생의 답변을 바탕으로 탐구 원리 이해도나 후속 적용을 고교 수준에서 검증하는 꼬리질문 1~2개 작성)
                 >
-                > 🔑 **필수 답변 키워드**: (여기에 학생 답변에 포함되어야 할 핵심 키워드 3~5개를 쉼표로 구분하여 작성)
+                > 🔑 **필수 답변 키워드**: (학생 답변에 포함되어야 할 핵심 키워드 3~5개를 쉼표로 구분하여 작성)
                 
                 ---
 
@@ -320,29 +341,42 @@ if st.button("면접 예상 질문 생성하기"):
                 {safe_student_text}
                 
                 [추가 지시사항]
-                학생의 생기부 텍스트에서 '교과 세특'뿐만 아니라 '자율활동', '진로활동', '동아리활동' 등 다양한 영역의 소재를 골고루 발췌하여 15개의 질문 세트를 구성하세요.
+                학생의 생기부 텍스트에서 '교과 세특'뿐만 아니라 '자율활동', '진로활동', '동아리활동', '행동특성 및 종합의견' 등 다양한 영역의 소재를 골고루 발췌하여 {question_count}개의 질문 세트를 구성하세요.
                 """
                 
                 # 간헐적 API 오류(429 한도 초과 등) 방지를 위한 자동 재시도 로직
                 max_retries = 3
-                retry_delay = 5
-                response_text = None
+                retry_delay = 12
+                response = None
                 
                 for attempt in range(max_retries):
                     try:
                         response = model.generate_content(prompt)
-                        response_text = response.text
                         break
                     except Exception as api_err:
                         if attempt < max_retries - 1:
-                            st.toast(f"일시적 지연이 발생하여 {retry_delay}초 후 자동 재시도합니다... ({attempt + 1}/{max_retries})")
+                            st.toast(f"일시적 한도 지연이 발생하여 {retry_delay}초 후 자동 재시도합니다... ({attempt + 1}/{max_retries})")
                             time.sleep(retry_delay)
                             retry_delay *= 2
                         else:
                             raise api_err
 
-                # 생성된 결과를 세션 상태에 영구 보관 (저장 버튼을 눌러도 유지됨)
-                st.session_state.interview_result = response_text
+                # 토큰 사용량 추출 (usage_metadata)
+                usage = getattr(response, "usage_metadata", None)
+                if usage:
+                    prompt_tokens = getattr(usage, "prompt_token_count", 0)
+                    output_tokens = getattr(usage, "candidates_token_count", 0)
+                    total_tokens = getattr(usage, "total_token_count", prompt_tokens + output_tokens)
+                    st.session_state.token_info = {
+                        "prompt": prompt_tokens,
+                        "output": output_tokens,
+                        "total": total_tokens
+                    }
+                else:
+                    st.session_state.token_info = None
+
+                # 생성된 결과를 세션 상태에 영구 보관
+                st.session_state.interview_result = response.text
                 st.session_state.safe_student_text = safe_student_text
                 st.session_state.target_title = f"{university}_{major}"
                 
@@ -351,12 +385,22 @@ if st.button("면접 예상 질문 생성하기"):
 
 
 # ==========================================
-# 5. 결과 출력 및 PDF 다운로드 구역 (버튼 블록 외부에 배치하여 화면 증발 방지)
+# 5. 결과 출력 및 PDF 다운로드 구역
 # ==========================================
 if st.session_state.interview_result:
     st.success(f"개인정보 보호 처리가 완료되었습니다. {st.session_state.target_title.replace('_', ' ')} 맞춤형 면접 질문을 출력합니다!")
     
-    # 상단에 PDF 저장 버튼 배치 (클릭해도 아래 질문이 절대 사라지지 않음)
+    # 📊 토큰 사용량 표시 구역
+    if st.session_state.token_info:
+        t_info = st.session_state.token_info
+        tpm_percent = round((t_info["total"] / 250000) * 100, 1)
+        st.info(
+            f"📊 **이번 작업 토큰 소모량:** 총 **{t_info['total']:,} 토큰** "
+            f"(입력: {t_info['prompt']:,} / 출력: {t_info['output']:,}) "
+            f"— 무료 분당 토큰 한도(25만)의 약 **{tpm_percent}%** 사용"
+        )
+    
+    # 상단에 PDF 저장 버튼 배치
     st.markdown("#### 📄 결과 저장하기 (수식·서식 유지)")
     pdf_download_component(
         result_text=st.session_state.interview_result,
@@ -365,10 +409,10 @@ if st.session_state.interview_result:
     
     st.divider()
     
-    # 화면에 질문 출력 (스트림릿 자체 마크다운 + 수식 렌더링)
+    # 화면에 질문 출력
     st.markdown(st.session_state.interview_result)
     
-    # 하단에도 편의를 위해 텍스트 백업 다운로드 버튼 유지 (눌러도 화면 초기화 안 됨)
+    # 하단 텍스트 백업 다운로드 버튼
     st.download_button(
         label="📄 일반 텍스트로 백업 다운로드 (.txt)",
         data=st.session_state.interview_result,
