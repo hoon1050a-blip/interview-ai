@@ -18,12 +18,14 @@ if "target_title" not in st.session_state:
     st.session_state.target_title = ""
 if "token_info" not in st.session_state:
     st.session_state.token_info = None
+if "used_model" not in st.session_state:
+    st.session_state.used_model = ""
 
 # 1. 깃허브에 올린 CSV 데이터 자동 불러오기
 @st.cache_data
 def load_data():
     try:
-        df = pd.read_csv("interview_data_extracted.csv") 
+        df = pd.read_csv("interview_data_extracted.csv")
         return df
     except Exception as e:
         return None
@@ -236,6 +238,94 @@ def pdf_download_component(result_text: str, title_prefix: str):
     components.html(html_code, height=100)
 
 
+# 4. 제미나이 3.8 우선 호출 및 오류 자동 방어 함수
+def generate_with_gemini(api_key: str, prompt: str):
+    genai.configure(api_key=api_key.strip())
+
+    # 1순위: gemini-3.8-flash 고정, 이후 서버 지원 Flash 모델들을 예비 후보로 구성
+    candidate_models = ["gemini-3.8-flash"]
+    try:
+        server_models = [
+            m.name.replace("models/", "")
+            for m in genai.list_models()
+            if "generateContent" in getattr(m, "supported_generation_methods", [])
+        ]
+        # 서버에 3.8 계열 세부 버전(예: gemini-3.8-flash-latest 등)이 있다면 바로 다음 순위로 추가
+        for m_name in server_models:
+            if "3.8" in m_name and "flash" in m_name and m_name not in candidate_models:
+                candidate_models.append(m_name)
+        # 서버에서 활성화된 최신 기본 Flash 모델들을 안전망으로 추가
+        for fallback in ["gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash"]:
+            if fallback in server_models and fallback not in candidate_models:
+                candidate_models.append(fallback)
+        # 기타 flash 모델 추가
+        for m_name in server_models:
+            if "flash" in m_name and "tts" not in m_name and "image" not in m_name and m_name not in candidate_models:
+                candidate_models.append(m_name)
+    except Exception:
+        # list_models 호출 자체가 제한된 환경일 경우 기본 예비 목록 사용
+        candidate_models.extend(["gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash"])
+
+    # 생기부 내 의학/법학/사회 문제 용어가 안전 필터에 막히지 않도록 설정
+    safety_settings = [
+        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+    ]
+
+    last_error = None
+
+    for model_name in candidate_models:
+        # 16384 토큰을 먼저 시도하고, 모델별 최대 출력 토큰 제한 오류 시 8192로 자동 전환
+        for max_tokens in [16384, 8192]:
+            model = genai.GenerativeModel(
+                model_name=model_name,
+                generation_config={"max_output_tokens": max_tokens},
+                safety_settings=safety_settings
+            )
+
+            max_retries = 2
+            retry_delay = 8
+
+            for attempt in range(max_retries):
+                try:
+                    response = model.generate_content(prompt)
+                    # 응답 텍스트가 정상적으로 존재하는지 확인
+                    if response and response.text:
+                        return response, model_name
+                except Exception as err:
+                    last_error = err
+                    err_msg = str(err).lower()
+
+                    # 1) 모델명 미지원(404)인 경우: 대기하지 않고 즉시 다음 후보 모델로 이동
+                    if "404" in err_msg or "not found" in err_msg or "not supported" in err_msg:
+                        break
+
+                    # 2) 토큰 설정값(16384) 초과 오류(400)인 경우: 즉시 8192 토큰으로 재시도
+                    if "invalid" in err_msg or "400" in err_msg or "token" in err_msg:
+                        break
+
+                    # 3) 일시적 한도 초과(429) 또는 서버 혼잡(503)인 경우: 잠시 대기 후 재시도
+                    if "429" in err_msg or "quota" in err_msg or "exhausted" in err_msg or "503" in err_msg:
+                        if attempt < max_retries - 1:
+                            st.toast(f"일시적 트래픽 지연({model_name})으로 {retry_delay}초 후 재시도합니다...")
+                            time.sleep(retry_delay)
+                            retry_delay *= 2
+                            continue
+                        else:
+                            break
+
+                    # 그 외 기타 예외 시 다음 설정으로 이동
+                    break
+
+            # 404(모델 없음) 오류였다면 같은 모델의 8192 토큰 시도도 건너뛰고 바로 다음 모델로 이동
+            if last_error and ("404" in str(last_error).lower() or "not found" in str(last_error).lower()):
+                break
+
+    raise last_error
+
+
 # ==========================================
 # 화면 UI 구성
 # ==========================================
@@ -265,7 +355,7 @@ with col4:
 uploaded_file = st.file_uploader("학생 생기부 PDF 파일 업로드", type="pdf")
 pdf_password = st.text_input("PDF 비밀번호 (나이스 생기부는 보통 생년월일 6자리, 없으면 비워둠)", type="password")
 
-# 4. 질문 생성 버튼 클릭 시 동작 (결과를 st.session_state에 저장)
+# 5. 질문 생성 버튼 클릭 시 동작 (결과를 st.session_state에 저장)
 if st.button("면접 예상 질문 생성하기"):
     if not api_key:
         st.warning("API 키를 입력해주세요.")
@@ -297,13 +387,6 @@ if st.button("면접 예상 질문 생성하기"):
                 
                 # 추출된 텍스트에서 개인정보 비식별화(마스킹) 실행
                 safe_student_text = mask_personal_info(raw_student_text, student_name)
-                
-                # AI 설정 및 호출
-                genai.configure(api_key=api_key)
-                model = genai.GenerativeModel(
-                    model_name='gemini-3.8-flash',
-                    generation_config={"max_output_tokens": 16384}
-                )
                 
                 # 프롬프트 생성 (메인 질문은 생기부 사실/과정 확인 중심, 꼬리질문에서 단계적 검증 지침 강화)
                 prompt = f"""
@@ -344,22 +427,8 @@ if st.button("면접 예상 질문 생성하기"):
                 학생의 생기부 텍스트에서 '교과 세특'뿐만 아니라 '자율활동', '진로활동', '동아리활동', '행동특성 및 종합의견' 등 다양한 영역의 소재를 골고루 발췌하여 {question_count}개의 질문 세트를 구성하세요.
                 """
                 
-                # 간헐적 API 오류(429 한도 초과 등) 방지를 위한 자동 재시도 로직
-                max_retries = 3
-                retry_delay = 12
-                response = None
-                
-                for attempt in range(max_retries):
-                    try:
-                        response = model.generate_content(prompt)
-                        break
-                    except Exception as api_err:
-                        if attempt < max_retries - 1:
-                            st.toast(f"일시적 한도 지연이 발생하여 {retry_delay}초 후 자동 재시도합니다... ({attempt + 1}/{max_retries})")
-                            time.sleep(retry_delay)
-                            retry_delay *= 2
-                        else:
-                            raise api_err
+                # AI 모델 호출 (gemini-3.8-flash 우선 호출 및 자동 방어 로직 실행)
+                response, used_model_name = generate_with_gemini(api_key, prompt)
 
                 # 토큰 사용량 추출 (usage_metadata)
                 usage = getattr(response, "usage_metadata", None)
@@ -379,13 +448,14 @@ if st.button("면접 예상 질문 생성하기"):
                 st.session_state.interview_result = response.text
                 st.session_state.safe_student_text = safe_student_text
                 st.session_state.target_title = f"{university}_{major}"
+                st.session_state.used_model = used_model_name
                 
             except Exception as e:
                 st.error(f"오류가 발생했습니다: {e}")
 
 
 # ==========================================
-# 5. 결과 출력 및 PDF 다운로드 구역
+# 6. 결과 출력 및 PDF 다운로드 구역
 # ==========================================
 if st.session_state.interview_result:
     st.success(f"개인정보 보호 처리가 완료되었습니다. {st.session_state.target_title.replace('_', ' ')} 맞춤형 면접 질문을 출력합니다!")
